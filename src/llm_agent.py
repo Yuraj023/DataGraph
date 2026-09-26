@@ -1,50 +1,48 @@
 import os
+import json
 import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Debug check to ensure API key is loaded
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
-    raise ValueError(" GEMINI_API_KEY not found! Check your .env file.")
+    raise ValueError("GEMINI_API_KEY not found. Check your .env file.")
 
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-3.8-flash")
 
-def generate_sql(user_query: str, okf_context: str) -> str:
-    """Sends the OKF context and user query to Gemini to generate a clean response."""
-    
-    system_prompt = """
-    You are an expert Senior Data Analyst AI Assistant. 
-    You are provided with structured context from an Open Knowledge Format (OKF) bundle.
-    
-    Your task is to help the user understand their data and solve their problem concisely.
-    Format your response EXACTLY like this:
+# Initialize model with a strict, token-efficient system instruction
+model = genai.GenerativeModel(
+    "gemini-3.8-flash",
+    system_instruction="You are an expert Data Analyst. Output ONLY valid JSON. No markdown, no backticks, no conversational filler."
+)
 
-    ** Business Logic:** [1-2 sentences explaining the rules applied from the context]
-    ** SQL Query:** 
-    ```sql
-    [The optimized, production-ready SQL query]
-    ```
-    ** Pro-Tip:** [1 sentence on data quality, SLAs, partition keys, or edge cases from the runbooks]
-
-    If the provided context does not contain the information needed, state clearly: " The current OKF bundle does not contain documentation for this specific metric/table." Do not hallucinate schemas.
-    """
+def generate_analysis(user_query: str, okf_context: str) -> dict:
+    """Sends context and returns a structured JSON dictionary."""
     
-    user_prompt = f"""
-    OKF KNOWLEDGE CONTEXT:
+    prompt = f"""
+    OKF CONTEXT:
     {okf_context}
     
-    USER REQUEST:
+    USER QUERY:
     {user_query}
+    
+    Return a JSON object with exactly these 4 keys:
+    {{
+      "logic": "1-2 sentences explaining the business rules applied from the context.",
+      "sql": "The raw SQL query string only. Do NOT wrap in markdown code blocks.",
+      "tip": "1 sentence regarding data quality, SLAs, partition keys, or edge cases.",
+      "error": "If the context is missing required info, explain here. Otherwise, empty string."
+    }}
     """
     
+    # Using response_mime_type guarantees valid JSON and saves tokens
     response = model.generate_content(
-        [system_prompt, user_prompt],
+        prompt,
         generation_config=genai.types.GenerationConfig(
             temperature=0.1,
+            response_mime_type="application/json"
         )
     )
     
-    return response.text
+    return json.loads(response.text)
