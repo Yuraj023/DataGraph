@@ -1,70 +1,110 @@
 import sys
 import os
+import re
+from typing import Any, List, Tuple
 import streamlit as st
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add workspace root to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.graph_traverser import traverse_graph
 from src.llm_agent import generate_analysis
 
-st.set_page_config(page_title="DataGraph OKF Copilot", layout="wide")
+st.set_page_config(
+    page_title="DataGraph OKF Copilot",
+    page_icon="☢️",
+    layout="wide"
+)
 
+# Enterprise Header
 st.title("DataGraph: OKF-Native Enterprise Copilot")
-st.caption("No Vector DBs. No Embeddings. Pure, structured knowledge traversal powered by OpenRouter (Gemma 4).")
+st.caption("Deterministic Knowledge Graph Traversal | Zero Tokenization | No Vector DBs | Powered by Open Knowledge Format")
 st.divider()
 
+# ============================================================
+# Smart Router Rules (Data-Driven with List Comprehensions)
+# ============================================================
+
+ROUTING_RULES: List[Tuple[List[str], str]] = [
+    (["cac", "acquisition", "marketing spend"], "knowledge_base/metrics/cac.md"),
+    (["mrr", "revenue", "recurring"], "knowledge_base/metrics/mrr.md"),
+    (["retention", "engagement", "churn", "dau"], "knowledge_base/metrics/user_retention.md"),
+    (["subscription", "billing cycle", "plan"], "knowledge_base/tables/subscriptions.md"),
+    (["transaction", "payment", "refund", "charge"], "knowledge_base/tables/transactions.md"),
+    (["user", "customer dimension", "signup"], "knowledge_base/tables/users.md"),
+    (["event", "page view", "behavior"], "knowledge_base/tables/user_events.md"),
+    (["billing logic", "proration", "dunning"], "knowledge_base/runbooks/billing_logic.md"),
+    (["staging", "ec2", "server", "outage", "down", "incident"], "knowledge_base/runbooks/incident_response.md"),
+    (["deployment", "deploy", "rollback", "ci/cd", "pipeline"], "knowledge_base/infrastructure/deployment_pipeline.md"),
+    (["database", "rds", "postgres", "replica"], "knowledge_base/infrastructure/aws_rds_prod.md"),
+    (["gdpr", "right to be forgotten", "erasure"], "knowledge_base/security/gdpr_compliance.md"),
+    (["pii", "compliance", "masking", "anonymization"], "knowledge_base/security/pii_handling.md"),
+    (["access", "permission", "role", "rbac", "iam"], "knowledge_base/security/access_control.md"),
+    (["audit", "log retention", "soc2"], "knowledge_base/security/audit_requirements.md"),
+    (["api", "endpoint", "rest", "schema", "contract"], "knowledge_base/product/api_contracts.md"),
+    (["feature flag", "ab test", "experiment", "rollout"], "knowledge_base/product/feature_flags.md"),
+]
+
+PERSONA_RULES: List[Tuple[List[str], str]] = [
+    (["pii", "gdpr", "compliance", "audit", "security", "access", "role", "rbac"], "security_auditor"),
+    (["down", "outage", "incident", "deploy", "server", "database", "rds", "ec2", "pipeline", "staging"], "devops_engineer"),
+]
+
 def get_start_file(query: str) -> str:
-    """Smart router for entry point selection."""
+    """Smart router selecting entry point using list comprehension."""
     query_lower = query.lower()
-    
-    if any(word in query_lower for word in ["cac", "acquisition", "marketing"]):
-        return "knowledge_base/metrics/cac.md"
-    elif any(word in query_lower for word in ["mrr", "revenue", "recurring"]):
-        return "knowledge_base/metrics/mrr.md"
-    elif any(word in query_lower for word in ["retention", "engagement", "churn"]):
-        return "knowledge_base/metrics/user_retention.md"
-    elif any(word in query_lower for word in ["staging", "ec2", "server", "down", "incident"]):
-        return "knowledge_base/runbooks/incident_response.md"
-    elif any(word in query_lower for word in ["deployment", "deploy", "rollback"]):
-        return "knowledge_base/infrastructure/deployment_pipeline.md"
-    elif any(word in query_lower for word in ["database", "rds", "postgres"]):
-        return "knowledge_base/infrastructure/aws_rds_prod.md"
-    elif any(word in query_lower for word in ["pii", "gdpr", "compliance", "audit"]):
-        return "knowledge_base/security/pii_handling.md"
-    elif any(word in query_lower for word in ["access", "permission", "role"]):
-        return "knowledge_base/security/access_control.md"
-    elif any(word in query_lower for word in ["api", "endpoint", "rest"]):
-        return "knowledge_base/product/api_contracts.md"
-    elif any(word in query_lower for word in ["feature flag", "ab test", "experiment"]):
-        return "knowledge_base/product/feature_flags.md"
-    else:
-        return "knowledge_base/index.md"
+    matches = [
+        target_file
+        for keywords, target_file in ROUTING_RULES
+        if any(kw in query_lower for kw in keywords)
+    ]
+    return matches[0] if matches else "knowledge_base/index.md"
 
 def get_agent_type(query: str) -> str:
-    """Infer the best agent persona based on the query."""
+    """Infer optimal agent persona based on query using list comprehension."""
     query_lower = query.lower()
-    if any(word in query_lower for word in ["pii", "gdpr", "compliance", "audit", "security", "access"]):
-        return "security_auditor"
-    elif any(word in query_lower for word in ["down", "outage", "incident", "deploy", "server", "database", "rds", "ec2"]):
-        return "devops_engineer"
-    else:
-        return "data_analyst"
+    matches = [
+        persona
+        for keywords, persona in PERSONA_RULES
+        if any(kw in query_lower for kw in keywords)
+    ]
+    return matches[0] if matches else "data_analyst"
 
-# Sidebar for Agent Trace
-with st.sidebar:
-    st.header("Agent Trace")
-    st.caption("Knowledge graph navigation path")
+def clean_code_block(content: Any) -> str:
+    """Safely cleans and extracts raw code blocks."""
+    if isinstance(content, list):
+        content = "\n".join(str(item) for item in content)
+    elif not isinstance(content, str):
+        content = str(content)
     
-    if "trace" in st.session_state:
-        st.markdown("**Files Visited:**")
-        for i, file in enumerate(st.session_state.trace, 1):
-            # Handle both Windows and Mac/Linux path separators
-            clean_path = file.replace("knowledge_base\\", "").replace("knowledge_base/", "")
-            st.markdown(f"{i}. `{clean_path}`")
-    else:
-        st.info("Run a query to see the agent's navigation path.")
+    cleaned = re.sub(r"^```(?:bash|sql|sh|json)?\s*", "", content.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
 
-# Main UI
+# ============================================================
+# Sidebar: Navigation Trace & Graph Settings
+# ============================================================
+
+with st.sidebar:
+    st.header("Graph Traversal Control")
+    st.caption("Explicit OKF link traversal settings")
+    max_depth = st.slider("Traversal Max Depth", min_value=1, max_value=4, value=3, help="Maximum recursion depth when following OKF links.")
+    
+    st.divider()
+    st.header("Agent Trace")
+    
+    if "trace" in st.session_state and st.session_state.trace:
+        st.success(f"Visited {len(st.session_state.trace)} Knowledge Nodes")
+        for i, file_path in enumerate(st.session_state.trace, 1):
+            clean_path = file_path.replace("knowledge_base\\", "").replace("knowledge_base/", "")
+            st.markdown(f"**{i}.** `{clean_path}`")
+    else:
+        st.info("Execute a query to inspect the traversal trace.")
+
+# ============================================================
+# Query Input Area
+# ============================================================
+
 st.markdown("### Ask a Question")
 
 col1, col2 = st.columns([1, 4])
@@ -82,82 +122,86 @@ user_query = st.text_area(
     label_visibility="collapsed"
 )
 
-submit_col1, submit_col2 = st.columns([1, 5])
+submit_col1, _ = st.columns([1, 5])
 with submit_col1:
     submit_button = st.button("Generate Answer", type="primary", use_container_width=True)
+
+# ============================================================
+# Execution Flow
+# ============================================================
 
 if submit_button:
     if not user_query.strip():
         st.warning("Please enter a question.")
     else:
-        # Determine starting file and agent type
         with st.spinner("Selecting knowledge entry point..."):
             start_file = get_start_file(user_query)
             agent_type = agent_override if agent_override != "auto" else get_agent_type(user_query)
             
-        # Traverse the knowledge graph (max_depth=2 prevents context overflow)
-        with st.spinner(f"Traversing OKF Graph from: `{start_file.replace('knowledge_base/', '').replace('knowledge_base\\', '')}`..."):
-            context, trace = traverse_graph(start_file, max_depth=2)
+        with st.spinner(f"Traversing OKF Graph starting from: `{start_file}` (depth={max_depth})..."):
+            context, trace = traverse_graph(start_file, max_depth=max_depth)
             st.session_state.trace = trace
             
-        # Generate response
-        with st.spinner(f"Generating response as {agent_type.replace('_', ' ').title()}..."):
+        with st.spinner(f"Synthesizing structured response as {agent_type.replace('_', ' ').title()}..."):
             try:
                 result = generate_analysis(user_query, context, agent_type)
                 
                 st.divider()
                 
-                # 1. Handle Hard System/Parsing Errors
+                # Check for fatal errors
                 error_msg = str(result.get("error", ""))
-                if "API Error" in error_msg or "Failed to parse" in error_msg:
+                if "API Error" in error_msg or "Failed to parse" in error_msg or "empty response" in error_msg.lower():
                     st.error(f"System Error: {result['error']}")
                     if "raw_response" in result:
                         with st.expander("View Raw LLM Output (Debugging)"):
                             st.code(result["raw_response"])
-                
-                # 2. Handle Context Warnings (but still render UI if data was salvaged)
                 else:
                     if result.get("error"):
-                        st.warning(f"Context Warning: {result['error']}")
+                        st.warning(f"Context Note: {result['error']}")
+
+                    # Summary metric pills
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Active Persona", agent_type.replace("_", " ").title())
+                    m2.metric("Nodes Visited", len(trace))
+                    m3.metric("Entry Point", os.path.basename(start_file))
                     
-                    # 3. Render UI natively based on the agent type
+                    # Persona Native Rendering
                     if agent_type == "data_analyst":
                         if result.get("logic"):
                             st.subheader("Business Logic")
-                            st.write(result["logic"])
+                            st.markdown(result["logic"])
                         if result.get("sql"):
                             st.subheader("SQL Query")
-                            clean_sql = result["sql"].replace("```sql", "").replace("```", "").strip()
-                            st.code(clean_sql, language="sql")
+                            st.code(clean_code_block(result["sql"]), language="sql")
                         if result.get("tip"):
-                            st.info(result["tip"])
+                            st.info(f"**Data Quality Pro-Tip:** {result['tip']}")
                             
                     elif agent_type == "devops_engineer":
                         if result.get("diagnosis"):
-                            st.subheader("Diagnosis")
-                            st.write(result["diagnosis"])
+                            st.subheader("Incident Diagnosis")
+                            st.markdown(result["diagnosis"])
                         if result.get("commands"):
-                            st.subheader("Commands to Run")
-                            clean_cmd = result["commands"].replace("```bash", "").replace("```", "").strip()
-                            st.code(clean_cmd, language="bash")
+                            st.subheader("Runbook CLI Commands")
+                            st.code(clean_code_block(result["commands"]), language="bash")
                         if result.get("escalation"):
-                            st.warning(result["escalation"])
+                            st.warning(f"**Escalation Path:** {result['escalation']}")
                             
                     elif agent_type == "security_auditor":
                         if result.get("risk_assessment"):
                             st.subheader("Risk Assessment")
-                            st.write(result["risk_assessment"])
+                            st.markdown(result["risk_assessment"])
                         if result.get("recommendations"):
-                            st.subheader("Recommendations")
+                            st.subheader("Security Recommendations")
                             st.markdown(result["recommendations"])
                         if result.get("compliance_gaps"):
-                            st.error(result["compliance_gaps"])
+                            st.error(f"**Compliance Gaps:** {result['compliance_gaps']}")
                 
                 st.divider()
                 
-                # Raw Context Expander
-                with st.expander("View Raw OKF Context"):
+                # Assembled Knowledge Context Inspector
+                with st.expander("View Assembled OKF Context (Deterministic Graph Traversal)"):
                     st.markdown("```markdown\n" + context + "\n```")
                     
             except Exception as e:
                 st.error(f"Unexpected error: {e}")
+                st.exception(e)

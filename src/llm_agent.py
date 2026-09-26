@@ -2,195 +2,166 @@ import os
 import json
 import re
 import time
+from typing import Dict, Any, Optional
 from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ============================================================
-# OpenRouter Configuration
+# Agent Personas (Structured for OKF Enterprise Tasks)
 # ============================================================
 
-api_key = os.getenv("OPENROUTER_API_KEY")
-if not api_key:
-    raise ValueError("OPENROUTER_API_KEY not found. Check your .env file.")
-
-MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
-
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key
-)
-
-# ============================================================
-# Agent Personas
-# ============================================================
-
-PERSONAS = {
+PERSONAS: Dict[str, Dict[str, Any]] = {
     "data_analyst": {
-        "instruction": (
-            "You are an expert Data Analyst. "
-            "Write optimized SQL based on the provided context, "
-            "schemas, metrics, and rules. Be extremely concise."
-        ),
+        "instruction": "Expert Data Analyst. Write production-ready, optimized SQL strictly honoring schema constraints, join rules, and PII masking.",
         "keys": ["logic", "sql", "tip", "error"]
     },
     "devops_engineer": {
-        "instruction": (
-            "You are an expert DevOps Engineer. "
-            "Diagnose infrastructure and deployment issues "
-            "and provide CLI commands based only on the provided context. Be extremely concise."
-        ),
+        "instruction": "Expert DevOps & Reliability Engineer. Diagnose infrastructure issues and provide actionable CLI runbook commands.",
         "keys": ["diagnosis", "commands", "escalation", "error"]
     },
     "security_auditor": {
-        "instruction": (
-            "You are an expert Security Auditor. "
-            "Assess security risks and provide compliance "
-            "recommendations based only on the provided context. Be extremely concise."
-        ),
+        "instruction": "Expert Security & Compliance Auditor. Assess risks, check GDPR/PII compliance rules, and identify governance gaps.",
         "keys": ["risk_assessment", "recommendations", "compliance_gaps", "error"]
     }
 }
 
-# ============================================================
-# Helper Functions
-# ============================================================
+_client: Optional[OpenAI] = None
 
-def get_model(agent_type: str) -> str:
-    return MODEL
+def get_client() -> OpenAI:
+    """Lazily initializes and caches the API client."""
+    global _client
+    if _client is not None:
+        return _client
+
+    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("API key not found. Please provide OPENROUTER_API_KEY or GEMINI_API_KEY in your .env file.")
+
+    base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    _client = OpenAI(base_url=base_url, api_key=api_key)
+    return _client
+
+def get_model() -> str:
+    """Returns the model configured in the environment."""
+    return os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
 def extract_value_from_broken_json(text: str, key: str) -> str:
-    pattern = rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"'
-    match = re.search(pattern, text, re.DOTALL)
+    """
+    Regex fallback extractor for JSON broken by token truncation or markdown wrappers.
+    Recovers both complete and truncated (unclosed) string values.
+    """
+    # 1. Try matching fully-quoted value
+    pattern_closed = rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+    match = re.search(pattern_closed, text, re.DOTALL)
     
+    # 2. If truncated before closing quote, match until end of string
+    if not match:
+        pattern_unclosed = rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)$'
+        match = re.search(pattern_unclosed, text, re.DOTALL)
+
     if match:
-        value = match.group(1)
+        raw_val = match.group(1)
         try:
-            value = json.loads(f'"{value}"')
-        except json.JSONDecodeError:
-            value = (
-                value
+            parsed = json.loads(f'"{raw_val}"')
+            return str(parsed).strip()
+        except Exception:
+            cleaned = (
+                raw_val
                 .replace("\\n", "\n")
                 .replace('\\"', '"')
                 .replace("\\\\", "\\")
             )
-        return value.strip()
-    
-    return ""
+            return cleaned.strip()
 
-# ============================================================
-# Main Analysis Function (With Retry Logic)
-# ============================================================
+    return ""
 
 def generate_analysis(
     user_query: str,
     okf_context: str,
     agent_type: str = "data_analyst"
-) -> dict:
-    if agent_type not in PERSONAS:
-        agent_type = "data_analyst"
-
-    persona = PERSONAS[agent_type]
-    model = get_model(agent_type)
-
+) -> Dict[str, Any]:
+    """Generates structured JSON response strictly adhering to the persona schema."""
+    persona = PERSONAS.get(agent_type, PERSONAS["data_analyst"])
     keys_str = ", ".join(f'"{key}"' for key in persona["keys"])
 
-    prompt = f"""
-Context:
+    prompt = f"""Context:
 {okf_context}
 
-Query:
-{user_query}
+Query: {user_query}
 
-Return a JSON object with exactly these keys:
-{keys_str}
+Return a valid JSON object with exactly these keys: {keys_str}.
+Do not include markdown fences, comments, or extra keys. Empty string if not applicable."""
 
-Rules:
-- Return ONLY a valid JSON object.
-- Do not use Markdown.
-- Do not use ```json.
-- Do not add explanations outside the JSON object.
-- Use an empty string when a field has no relevant information.
-"""
+    try:
+        client = get_client()
+    except Exception as e:
+        return {"error": str(e)}
 
-    # ========================================================
-    # RETRY LOOP: Tries up to 3 times if it hits a 429 limit
-    # ========================================================
+    model = get_model()
+    response = None
+
+    # Retry loop with exponential backoff for rate limits
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": persona["instruction"]
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": persona["instruction"]},
+                    {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=2048,
-                response_format={
-                    "type": "json_object"
-                }
+                max_tokens=1500,
+                response_format={"type": "json_object"}
             )
-            # If successful, break out of the retry loop
-            break 
-            
+            break
         except Exception as e:
-            error_str = str(e)
-            # If it's a 429 Rate Limit error, wait and try again
-            if "429" in error_str and attempt < 2:
-                wait_time = 15 * (attempt + 1) # Waits 15s, then 30s
-                print(f"⚠️ Hit free tier token limit (429). Waiting {wait_time}s for quota to refill...")
+            err_msg = str(e)
+            if "429" in err_msg and attempt < 2:
+                wait_time = 4 * (attempt + 1)
                 time.sleep(wait_time)
             else:
-                # If it fails 3 times, or it's a different error, return it
-                return {"error": f"API Error: {str(e)}"}
+                return {"error": f"API Error: {err_msg}"}
 
-    # ========================================================
-    # Parse Response
-    # ========================================================
-    raw_text = response.choices[0].message.content
+    if not response or not response.choices:
+        return {"error": "LLM failed to return a valid completion."}
 
+    raw_text = (response.choices[0].message.content or "").strip()
     if not raw_text:
         return {"error": "LLM returned an empty response."}
 
-    raw_text = raw_text.strip()
-
+    # Clean markdown wrappers if present
     if raw_text.startswith("```"):
         raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
         raw_text = re.sub(r"\s*```$", "", raw_text)
 
+    # Parse JSON or fallback via regex
     try:
         start_idx = raw_text.find("{")
         end_idx = raw_text.rfind("}")
-
         if start_idx != -1 and end_idx != -1:
-            json_str = raw_text[start_idx:end_idx + 1]
-            result = json.loads(json_str)
+            result = json.loads(raw_text[start_idx:end_idx + 1])
         else:
-            raise json.JSONDecodeError("No JSON object found", raw_text, 0)
-
+            raise json.JSONDecodeError("No JSON boundaries found", raw_text, 0)
     except json.JSONDecodeError:
-        result = {}
-        for key in persona["keys"]:
-            result[key] = extract_value_from_broken_json(raw_text, key)
-
+        result = {
+            key: extract_value_from_broken_json(raw_text, key)
+            for key in persona["keys"]
+        }
         if not any(result.values()):
             return {
                 "error": "Failed to parse JSON from LLM.",
                 "raw_response": raw_text
             }
 
-    for key in result:
-        if isinstance(result[key], str):
-            result[key] = result[key].strip()
-            result[key] = result[key].strip("`")
-            result[key] = re.sub(r"^sql\s*", "", result[key], flags=re.IGNORECASE)
-            result[key] = re.sub(r"^bash\s*", "", result[key], flags=re.IGNORECASE)
+    # Clean formatting using dictionary comprehension
+    cleaned_result = {
+        k: (
+            re.sub(r"^(?:sql|bash)\s*", "", v.strip().strip("`"), flags=re.IGNORECASE)
+            if isinstance(v, str) else v
+        )
+        for k, v in result.items()
+    }
 
-    return result
+    return cleaned_result

@@ -1,100 +1,114 @@
 import os
+from typing import Tuple, List, Set
 from .okf_parser import parse_okf_file, extract_links
 
-def traverse_graph(start_file: str, max_depth: int = 1) -> tuple[str, list[str]]:
+def traverse_graph(start_file: str, max_depth: int = 3) -> Tuple[str, List[str]]:
     """
-    Optimized traverser that:
-    - Strips YAML frontmatter (saves ~30% tokens)
-    - Removes verbose sections (saves ~20% tokens)
-    - Limits depth to reduce file count
+    Traverses the OKF knowledge graph starting from a given file.
+    
+    Features:
+    - Follows explicit Markdown links in the document body.
+    - CONDITIONAL: Auto-follows related_security links if document contains PII or is a security doc.
+    - Follows explicit YAML relationships (tables, runbooks, infrastructure, product).
+    - Prevents cycles using canonical path tracking.
+    - Uses set/list comprehensions for optimized path resolution.
+    
+    Args:
+        start_file: Path to the starting OKF markdown file.
+        max_depth: Maximum recursion depth for graph links.
+        
+    Returns:
+        tuple: (formatted_context_string, list_of_visited_file_paths)
     """
-    visited = set()
-    context_blocks = []
-    trace = []
+    visited_canonical: Set[str] = set()
+    context_blocks: List[str] = []
+    trace: List[str] = []
 
-    def _compress_content(body: str) -> str:
-        """Remove verbose sections that waste tokens."""
-        lines = body.split('\n')
-        compressed = []
-        skip_section = False
+    def _walk(current_path: str, depth: int) -> None:
+        normalized_path = os.path.normpath(current_path)
+        canonical_path = os.path.abspath(normalized_path)
         
-        for line in lines:
-            # Skip verbose sections that don't help SQL generation
-            if line.startswith('## Data Quality Notes'):
-                skip_section = True
-                continue
-            if line.startswith('## Common Query Patterns'):
-                skip_section = True
-                continue
-            if line.startswith('## Join Patterns'):
-                skip_section = True
-                continue
-                
-            # Stop skipping at next section
-            if line.startswith('## ') and skip_section:
-                skip_section = False
-            
-            if not skip_section:
-                # Remove excessive blank lines
-                if line.strip() or (compressed and compressed[-1].strip()):
-                    compressed.append(line)
-        
-        return '\n'.join(compressed).strip()
-
-    def _walk(current_path: str, depth: int):
-        current_path = os.path.normpath(current_path)
-        
-        if current_path in visited or depth > max_depth:
+        if canonical_path in visited_canonical or depth > max_depth:
             return
-        if not os.path.exists(current_path):
+        if not os.path.exists(normalized_path):
             return
             
-        visited.add(current_path)
-        trace.append(current_path)
+        visited_canonical.add(canonical_path)
+        trace.append(normalized_path)
         
         try:
-            parsed = parse_okf_file(current_path)
+            parsed = parse_okf_file(normalized_path)
         except Exception:
             return
             
-        meta = parsed["metadata"]
-        body = parsed['body']
+        meta = parsed.get("metadata", {})
+        body = parsed.get("body", "")
         
-        # OPTIMIZATION: Only include essential metadata (type + title)
-        # Skip owner, tags, timestamps, etc. - they waste tokens
-        essential_meta = f"[{meta.get('type', 'Unknown')}] {meta.get('title', 'Untitled')}"
+        # Build concise header and operational metadata using list comprehension
+        relevant_keys = [
+            "type", "title", "resource", "partitioning", "clustering", 
+            "contains_pii", "pii_level", "compliance", "data_freshness"
+        ]
+        meta_lines = [
+            f"**{k}:** {meta[k]}"
+            for k in relevant_keys
+            if k in meta and meta[k] is not None
+        ]
+        meta_str = " | ".join(meta_lines) if meta_lines else ""
         
-        # OPTIMIZATION: Compress the body content
-        compressed_body = _compress_content(body)
+        header = f"### [{meta.get('type', 'Document')}] {meta.get('title', os.path.basename(normalized_path))}"
+        header_block = f"{header}\n{meta_str}\n" if meta_str else f"{header}\n"
+        context_blocks.append(f"{header_block}\n{body}".strip())
         
-        # Build compact context block
-        context_blocks.append(f"### {essential_meta}\n{compressed_body}")
+        dir_name = os.path.dirname(normalized_path)
         
-        # Collect links to follow
-        links_to_follow = set()
+        # 1. Relative Markdown body links using set comprehension
+        body_links = {
+            os.path.normpath(os.path.join(dir_name, link))
+            for link in extract_links(body)
+        }
         
-        for link in extract_links(parsed["body"]):
-            next_path = os.path.normpath(os.path.join(os.path.dirname(current_path), link))
-            links_to_follow.add(next_path)
+        # 2. General YAML relationship links using list/set comprehension
+        general_rel_keys = [
+            "related_tables",
+            "related_runbooks",
+            "related_infrastructure",
+            "related_product",
+        ]
+        yaml_links = {
+            os.path.normpath(os.path.join(dir_name, rel_link))
+            for rel_key in general_rel_keys
+            for rel_link in (meta.get(rel_key) or [])
+            if rel_link
+        }
         
-        # Conditional traversal for PII
-        if meta.get("contains_pii") or meta.get("pii_level") == "HIGH":
-            for sec_link in meta.get("related_security", []):
-                next_path = os.path.normpath(os.path.join(os.path.dirname(current_path), sec_link))
-                links_to_follow.add(next_path)
+        # 3. CONDITIONAL TRAVERSAL: Follow security policies if document touches PII or is a security doc
+        has_pii = (
+            bool(meta.get("contains_pii"))
+            or "HIGH" in str(meta.get("pii_level", "")).upper()
+            or "PII" in str(meta.get("pii_level", "")).upper()
+        )
+        is_sec_doc = (
+            meta.get("type") == "Security Policy"
+            or "security" in normalized_path.replace("\\", "/").lower()
+        )
         
-        for rel_key in ["related_tables", "related_runbooks", "related_infrastructure"]:
-            for rel_link in meta.get(rel_key, []):
-                next_path = os.path.normpath(os.path.join(os.path.dirname(current_path), rel_link))
-                links_to_follow.add(next_path)
+        security_links = {
+            os.path.normpath(os.path.join(dir_name, sec_link))
+            for sec_link in (meta.get("related_security") or [])
+            if sec_link
+        } if (has_pii or is_sec_doc) else set()
         
-        # Follow links (only unvisited ones)
-        for next_path in links_to_follow:
-            if next_path not in visited:
+        # Combine all outbound links
+        links_to_follow = body_links | yaml_links | security_links
+        
+        # Recursively visit next nodes
+        for next_path in sorted(links_to_follow):
+            next_canonical = os.path.abspath(next_path)
+            if next_canonical not in visited_canonical:
                 _walk(next_path, depth + 1)
 
     _walk(start_file, 0)
     
-    # OPTIMIZATION: Join with minimal separator
     context_str = "\n\n---\n\n".join(context_blocks)
     return context_str, trace
