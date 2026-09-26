@@ -1,18 +1,23 @@
 import os
+from pathlib import Path
 from .okf_parser import parse_okf_file, extract_links
 
-def traverse_graph(start_file: str, max_depth: int = 3) -> str:
+def traverse_graph(start_file: str, max_depth: int = 3) -> tuple[str, list[str]]:
     """
     Starts at a file, reads it, and follows its links up to max_depth.
-    Returns a single formatted string to be injected into the LLM prompt.
+    Returns: 
+        1. A single formatted string to be injected into the LLM prompt.
+        2. A list of visited file paths (for the UI trace).
     """
     visited = set()
     context_blocks = []
+    trace = []
 
-    def _walk(current_path, depth):
+    def _walk(current_path: str, depth: int):
         if current_path in visited or depth > max_depth:
             return
         visited.add(current_path)
+        trace.append(current_path)
         
         if not os.path.exists(current_path):
             return
@@ -35,4 +40,6 @@ def traverse_graph(start_file: str, max_depth: int = 3) -> str:
             _walk(next_path, depth + 1)
 
     _walk(start_file, 0)
-    return "\n---\n".join(context_blocks)
+    
+    context_str = "\n---\n".join(context_blocks)
+    return context_str, trace

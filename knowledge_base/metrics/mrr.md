@@ -12,5 +12,5 @@ MRR is calculated by summing the `amount` column from the `subscriptions` table
 where the `status` is 'active'. 
 
 **Dependencies & Context:**
-- To understand the exact columns, see the [Subscriptions Table](../tables/subscriptions.md).
-- For edge cases regarding trials and discounts, read the [Billing Logic Runbook](../runbooks/billing_logic.md).
+- To understand the exact columns and data types, see the [Subscriptions Table](../tables/subscriptions.md).
+- For edge cases regarding free trials and discounts, you MUST read the [Billing Logic Runbook](../runbooks/billing_logic.md).
