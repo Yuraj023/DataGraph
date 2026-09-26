@@ -1,7 +1,6 @@
 import sys
 import os
 import streamlit as st
-import re
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -49,120 +48,15 @@ def get_start_file(query: str) -> str:
     else:
         return "knowledge_base/index.md"
 
-def format_response(response_text: str, query: str) -> None:
-    """
-    Parse and format the LLM response based on content type.
-    All formatting logic lives here, not in the LLM prompt.
-    """
+def get_agent_type(query: str) -> str:
+    """Infer the best agent persona based on the query."""
     query_lower = query.lower()
-    
-    # Detect response type and format accordingly
-    if any(word in query_lower for word in ["sql", "query", "calculate", "metric"]):
-        format_sql_response(response_text)
-    elif any(word in query_lower for word in ["down", "incident", "troubleshoot", "command"]):
-        format_devops_response(response_text)
-    elif any(word in query_lower for word in ["pii", "gdpr", "compliance", "security"]):
-        format_security_response(response_text)
+    if any(word in query_lower for word in ["pii", "gdpr", "compliance", "audit", "security", "access"]):
+        return "security_auditor"
+    elif any(word in query_lower for word in ["down", "outage", "incident", "deploy", "server", "database", "rds", "ec2"]):
+        return "devops_engineer"
     else:
-        # Generic response
-        st.write(response_text)
-
-def format_sql_response(response_text: str) -> None:
-    """Extract and format SQL queries from response."""
-    # Look for SQL code blocks
-    sql_match = re.search(r'```sql\s*(.*?)\s*```', response_text, re.DOTALL)
-    
-    if sql_match:
-        sql_code = sql_match.group(1).strip()
-        
-        # Split response into parts
-        parts = response_text.split('```sql')
-        before_sql = parts[0].strip()
-        after_sql = parts[1].split('```')[-1].strip() if len(parts) > 1 else ""
-        
-        # Render business logic
-        if before_sql:
-            st.subheader("Business Logic")
-            st.write(before_sql)
-        
-        # Render SQL
-        st.subheader("SQL Query")
-        st.code(sql_code, language="sql")
-        
-        # Render pro-tip
-        if after_sql and len(after_sql) > 10:
-            st.info(after_sql)
-    else:
-        # No SQL found, just render as-is
-        st.write(response_text)
-
-def format_devops_response(response_text: str) -> None:
-    """Extract and format CLI commands from response."""
-    # Look for bash/code blocks
-    cmd_match = re.search(r'```(?:bash|shell)?\s*(.*?)\s*```', response_text, re.DOTALL)
-    
-    if cmd_match:
-        cmd_code = cmd_match.group(1).strip()
-        
-        parts = response_text.split('```')
-        before_cmd = parts[0].strip()
-        after_cmd = parts[-1].strip() if len(parts) > 1 else ""
-        
-        # Render diagnosis
-        if before_cmd:
-            st.subheader("Diagnosis")
-            st.write(before_cmd)
-        
-        # Render commands
-        st.subheader("Commands to Run")
-        st.code(cmd_code, language="bash")
-        
-        # Render escalation
-        if after_cmd and len(after_cmd) > 10:
-            st.warning(after_cmd)
-    else:
-        st.write(response_text)
-
-def format_security_response(response_text: str) -> None:
-    """Format security/compliance responses."""
-    lines = response_text.split('\n')
-    
-    risk_section = []
-    rec_section = []
-    current_section = None
-    
-    for line in lines:
-        line_lower = line.lower()
-        if 'risk' in line_lower or 'assessment' in line_lower:
-            current_section = 'risk'
-        elif 'recommendation' in line_lower or 'action' in line_lower:
-            current_section = 'rec'
-        elif current_section == 'risk':
-            risk_section.append(line)
-        elif current_section == 'rec':
-            rec_section.append(line)
-    
-    # Render risk assessment
-    if risk_section:
-        st.subheader("Risk Assessment")
-        st.write('\n'.join(risk_section).strip())
-    
-    # Render recommendations
-    if rec_section:
-        st.subheader("Recommendations")
-        for line in rec_section:
-            line = line.strip()
-            if line and (line.startswith('-') or line.startswith('*') or line[0].isdigit()):
-                # Clean up bullet points
-                line = re.sub(r'^[-*]\s*', '', line)
-                line = re.sub(r'^\d+\.\s*', '', line)
-                st.markdown(f"- {line}")
-            elif line:
-                st.write(line)
-    
-    # If no sections detected, render as-is
-    if not risk_section and not rec_section:
-        st.write(response_text)
+        return "data_analyst"
 
 # Sidebar for Agent Trace
 with st.sidebar:
@@ -172,13 +66,23 @@ with st.sidebar:
     if "trace" in st.session_state:
         st.markdown("**Files Visited:**")
         for i, file in enumerate(st.session_state.trace, 1):
-            clean_path = file.replace("knowledge_base/", "")
+            # Handle both Windows and Mac/Linux path separators
+            clean_path = file.replace("knowledge_base\\", "").replace("knowledge_base/", "")
             st.markdown(f"{i}. `{clean_path}`")
     else:
         st.info("Run a query to see the agent's navigation path.")
 
 # Main UI
 st.markdown("### Ask a Question")
+
+# Agent persona selector (optional override)
+col1, col2 = st.columns([1, 4])
+with col1:
+    agent_override = st.selectbox(
+        "Agent Persona",
+        ["auto", "data_analyst", "devops_engineer", "security_auditor"],
+        format_func=lambda x: "Auto-detect" if x == "auto" else x.replace("_", " ").title()
+    )
 
 user_query = st.text_area(
     label="Query",
@@ -195,28 +99,65 @@ if submit_button:
     if not user_query.strip():
         st.warning("Please enter a question.")
     else:
-        # Determine starting file
+        # Determine starting file and agent type
         with st.spinner("Selecting knowledge entry point..."):
             start_file = get_start_file(user_query)
+            agent_type = agent_override if agent_override != "auto" else get_agent_type(user_query)
             
         # Traverse the knowledge graph
-        with st.spinner(f"Traversing OKF Graph from: `{start_file.replace('knowledge_base/', '')}`..."):
+        with st.spinner(f"Traversing OKF Graph from: `{start_file.replace('knowledge_base/', '').replace('knowledge_base\\', '')}`..."):
             context, trace = traverse_graph(start_file, max_depth=3)
             st.session_state.trace = trace
             
         # Generate response
-        with st.spinner("Generating response..."):
+        with st.spinner(f"Generating response as {agent_type.replace('_', ' ').title()}..."):
             try:
-                result = generate_analysis(user_query, context)
+                # The LLM agent now returns a structured JSON dictionary directly
+                result = generate_analysis(user_query, context, agent_type)
                 
                 st.divider()
                 
-                # Handle error
-                if "error" in result:
-                    st.error(f"Error: {result['error']}")
+                # Handle global API errors
+                if "error" in result and result["error"] and "API Error" in str(result["error"]):
+                    st.error(f"System Error: {result['error']}")
                 else:
-                    # Format and render response
-                    format_response(result["response"], user_query)
+                    # Handle context warnings (e.g., missing info in OKF bundle)
+                    if result.get("error"):
+                        st.warning(f"Context Warning: {result['error']}")
+                    
+                    # Render UI natively based on the agent type and JSON keys
+                    if agent_type == "data_analyst":
+                        if result.get("logic"):
+                            st.subheader("Business Logic")
+                            st.write(result["logic"])
+                        if result.get("sql"):
+                            st.subheader("SQL Query")
+                            # Clean any accidental markdown backticks just in case
+                            clean_sql = result["sql"].replace("```sql", "").replace("```", "").strip()
+                            st.code(clean_sql, language="sql")
+                        if result.get("tip"):
+                            st.info(result["tip"])
+                            
+                    elif agent_type == "devops_engineer":
+                        if result.get("diagnosis"):
+                            st.subheader("Diagnosis")
+                            st.write(result["diagnosis"])
+                        if result.get("commands"):
+                            st.subheader("Commands to Run")
+                            clean_cmd = result["commands"].replace("```bash", "").replace("```", "").strip()
+                            st.code(clean_cmd, language="bash")
+                        if result.get("escalation"):
+                            st.warning(result["escalation"])
+                            
+                    elif agent_type == "security_auditor":
+                        if result.get("risk_assessment"):
+                            st.subheader("Risk Assessment")
+                            st.write(result["risk_assessment"])
+                        if result.get("recommendations"):
+                            st.subheader("Recommendations")
+                            st.markdown(result["recommendations"])
+                        if result.get("compliance_gaps"):
+                            st.error(result["compliance_gaps"])
                 
                 st.divider()
                 
