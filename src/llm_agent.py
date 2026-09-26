@@ -11,38 +11,36 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# Initialize model with a strict, token-efficient system instruction
+# Minimal system instruction - just tell it what it is, not how to format
 model = genai.GenerativeModel(
     "gemini-3.8-flash",
-    system_instruction="You are an expert Data Analyst. Output ONLY valid JSON. No markdown, no backticks, no conversational filler."
+    system_instruction="You are an expert technical assistant. Answer concisely based on the provided context."
 )
 
 def generate_analysis(user_query: str, okf_context: str) -> dict:
-    """Sends context and returns a structured JSON dictionary."""
-    
-    prompt = f"""
-    OKF CONTEXT:
-    {okf_context}
-    
-    USER QUERY:
-    {user_query}
-    
-    Return a JSON object with exactly these 4 keys:
-    {{
-      "logic": "1-2 sentences explaining the business rules applied from the context.",
-      "sql": "The raw SQL query string only. Do NOT wrap in markdown code blocks.",
-      "tip": "1 sentence regarding data quality, SLAs, partition keys, or edge cases.",
-      "error": "If the context is missing required info, explain here. Otherwise, empty string."
-    }}
+    """
+    Sends context to LLM with minimal prompt overhead.
+    Returns raw response text - formatting handled by Streamlit.
     """
     
-    # Using response_mime_type guarantees valid JSON and saves tokens
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.1,
-            response_mime_type="application/json"
-        )
-    )
+    # Ultra-minimal prompt - just context + query
+    prompt = f"""Context:
+{okf_context}
+
+Query: {user_query}
+
+Answer:"""
     
-    return json.loads(response.text)
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=1000  # Limit output to save tokens
+            )
+        )
+        
+        return {"response": response.text}
+        
+    except Exception as e:
+        return {"error": str(e)}
