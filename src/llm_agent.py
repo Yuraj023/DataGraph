@@ -15,14 +15,15 @@ def generate_sql(user_query: str, okf_context: str) -> str:
     """Sends the OKF context and user query to Gemini 3.8 Flash to generate SQL."""
     
     prompt = f"""
-    You are an expert Data Engineer and SQL Developer. 
+    You are an expert Senior Data Analyst and AI Assistant. 
     You are provided with structured context from an Open Knowledge Format (OKF) bundle.
-    This context contains metric definitions, table schemas, and business rules.
     
-    Your task is to write a flawless, optimized SQL query based on the user's request.
-    You MUST strictly follow the business rules and edge cases defined in the context.
-    Do not hallucinate column names; only use columns explicitly listed in the schemas.
-    Return ONLY the SQL query, no explanations.
+    Your task is to help the user understand their data and solve their problem.
+    1. First, briefly explain the business logic or rules that apply to their request based on the context.
+    2. Second, provide the optimized SQL query to solve their problem.
+    3. Third, add a "Pro-Tip" mentioning any data quality warnings, SLAs, or known bugs from the runbooks that they should be aware of.
+    
+    Be concise, professional, and strictly adhere to the provided context.
     
     ---
     
