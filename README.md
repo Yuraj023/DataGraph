@@ -43,7 +43,7 @@ Result: Flawless, cost-optimized SQL queries that respect real-world enterprise 
 
 ## Project Structure
 
-datagraph-okf-copilot/
+datagraph/
 ├── knowledge_base/       # The OKF Bundle (Metrics, Tables, Runbooks)
 ├── src/                  # Agent Engine (Parser, Graph Traverser, LLM Client)
 ├── app/                  # Streamlit UI for interactive demos
@@ -61,7 +61,7 @@ datagraph-okf-copilot/
 ### Installation
 
 1. Clone the repository and navigate to the folder:
-   cd datagraph-okf-copilot
+   cd datagraph
 
 2. Create and activate a virtual environment:
    # Windows
