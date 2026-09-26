@@ -43,15 +43,16 @@ Result: Flawless, cost-optimized SQL queries that respect real-world enterprise 
 
 ## Project Structure
 
+```text
 datagraph/
-├── knowledge_base/       # The OKF Bundle (Metrics, Tables, Runbooks)
-├── src/                  # Agent Engine (Parser, Graph Traverser, LLM Client)
-├── app/                  # Streamlit UI for interactive demos
-├── scripts/              # Tooling (OKF Bundle Validator)
-├── requirements.txt      # Python dependencies
-├── .env.example          # Template for API keys
-└── README.md             # Project documentation
-
+├── knowledge_base/     # The OKF Bundle (Metrics, Tables, Runbooks)
+├── src/                # Agent Engine (Parser, Graph Traverser, LLM Client)
+├── app/                # Streamlit UI for interactive demos
+├── scripts/            # Tooling (OKF Bundle Validator)
+├── requirements.txt    # Python dependencies
+├── .env.example        # Template for API keys
+└── README.md           # Project documentation
+```
 ## Getting Started
 
 ### Prerequisites
