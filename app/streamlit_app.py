@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.graph_traverser import traverse_graph
 from src.llm_agent import generate_analysis
 
-st.set_page_config(page_title="DataGraph OKF Copilot", layout="wide", page_icon="📊")
+st.set_page_config(page_title="DataGraph OKF Copilot", layout="wide")
 
 # Header Section
 st.title("DataGraph: OKF-Native Enterprise Copilot")
