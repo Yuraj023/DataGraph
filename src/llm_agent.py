@@ -1,84 +1,196 @@
 import os
 import json
-import google.generativeai as genai
+import re
+import time
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
+# ============================================================
+# OpenRouter Configuration
+# ============================================================
+
+api_key = os.getenv("OPENROUTER_API_KEY")
 if not api_key:
-    raise ValueError("GEMINI_API_KEY not found. Check your .env file.")
+    raise ValueError("OPENROUTER_API_KEY not found. Check your .env file.")
 
-genai.configure(api_key=api_key)
+MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
-# Highly compressed personas to save input tokens
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=api_key
+)
+
+# ============================================================
+# Agent Personas
+# ============================================================
+
 PERSONAS = {
     "data_analyst": {
-        "instruction": "Expert Data Analyst. Write optimized SQL based on context schemas and rules.",
-        "keys": '{"logic":"rules applied","sql":"raw query no markdown","tip":"SLAs/edge cases","error":"missing info"}'
+        "instruction": (
+            "You are an expert Data Analyst. "
+            "Write optimized SQL based on the provided context, "
+            "schemas, metrics, and rules. Be extremely concise."
+        ),
+        "keys": ["logic", "sql", "tip", "error"]
     },
     "devops_engineer": {
-        "instruction": "Expert DevOps Engineer. Diagnose issues and provide CLI commands from context.",
-        "keys": '{"diagnosis":"root cause","commands":"CLI commands no markdown","escalation":"escalation path","error":"missing info"}'
+        "instruction": (
+            "You are an expert DevOps Engineer. "
+            "Diagnose infrastructure and deployment issues "
+            "and provide CLI commands based only on the provided context. Be extremely concise."
+        ),
+        "keys": ["diagnosis", "commands", "escalation", "error"]
     },
     "security_auditor": {
-        "instruction": "Expert Security Auditor. Assess risks and provide compliance recommendations.",
-        "keys": '{"risk_assessment":"security risks","recommendations":"actions to take","compliance_gaps":"violations","error":"missing info"}'
+        "instruction": (
+            "You are an expert Security Auditor. "
+            "Assess security risks and provide compliance "
+            "recommendations based only on the provided context. Be extremely concise."
+        ),
+        "keys": ["risk_assessment", "recommendations", "compliance_gaps", "error"]
     }
 }
 
-# Cache model instances to reduce initialization overhead and latency
-_models = {}
-def get_model(agent_type):
-    if agent_type not in _models:
-        # Using Gemini 3.8 Flash - optimized for autonomous agents
-        _models[agent_type] = genai.GenerativeModel(
-            "gemini-3.8-flash", 
-            system_instruction=PERSONAS[agent_type]["instruction"]
-        )
-    return _models[agent_type]
+# ============================================================
+# Helper Functions
+# ============================================================
 
-def generate_analysis(user_query: str, okf_context: str, agent_type: str = "data_analyst") -> dict:
-    """
-    Generates a structured JSON response with minimal token usage using Gemini 3.8 Flash.
-    """
+def get_model(agent_type: str) -> str:
+    return MODEL
+
+def extract_value_from_broken_json(text: str, key: str) -> str:
+    pattern = rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+    match = re.search(pattern, text, re.DOTALL)
+    
+    if match:
+        value = match.group(1)
+        try:
+            value = json.loads(f'"{value}"')
+        except json.JSONDecodeError:
+            value = (
+                value
+                .replace("\\n", "\n")
+                .replace('\\"', '"')
+                .replace("\\\\", "\\")
+            )
+        return value.strip()
+    
+    return ""
+
+# ============================================================
+# Main Analysis Function (With Retry Logic)
+# ============================================================
+
+def generate_analysis(
+    user_query: str,
+    okf_context: str,
+    agent_type: str = "data_analyst"
+) -> dict:
     if agent_type not in PERSONAS:
         agent_type = "data_analyst"
-        
+
     persona = PERSONAS[agent_type]
     model = get_model(agent_type)
-    
-    # Ultra-minimal prompt (saves ~150 tokens per request)
-    prompt = f"""Context:
+
+    keys_str = ", ".join(f'"{key}"' for key in persona["keys"])
+
+    prompt = f"""
+Context:
 {okf_context}
 
-Query: {user_query}
+Query:
+{user_query}
 
-Return JSON ONLY. No markdown. Keys: {persona['keys']}"""
+Return a JSON object with exactly these keys:
+{keys_str}
+
+Rules:
+- Return ONLY a valid JSON object.
+- Do not use Markdown.
+- Do not use ```json.
+- Do not add explanations outside the JSON object.
+- Use an empty string when a field has no relevant information.
+"""
+
+    # ========================================================
+    # RETRY LOOP: Tries up to 3 times if it hits a 429 limit
+    # ========================================================
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": persona["instruction"]
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=2048,
+                response_format={
+                    "type": "json_object"
+                }
+            )
+            # If successful, break out of the retry loop
+            break 
+            
+        except Exception as e:
+            error_str = str(e)
+            # If it's a 429 Rate Limit error, wait and try again
+            if "429" in error_str and attempt < 2:
+                wait_time = 15 * (attempt + 1) # Waits 15s, then 30s
+                print(f"⚠️ Hit free tier token limit (429). Waiting {wait_time}s for quota to refill...")
+                time.sleep(wait_time)
+            else:
+                # If it fails 3 times, or it's a different error, return it
+                return {"error": f"API Error: {str(e)}"}
+
+    # ========================================================
+    # Parse Response
+    # ========================================================
+    raw_text = response.choices[0].message.content
+
+    if not raw_text:
+        return {"error": "LLM returned an empty response."}
+
+    raw_text = raw_text.strip()
+
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+        raw_text = re.sub(r"\s*```$", "", raw_text)
 
     try:
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                response_mime_type="application/json",
-                max_output_tokens=600 # Strict limit to prevent runaway costs
-            )
-        )
-        
-        result = json.loads(response.text)
-        
-        # Clean up any accidental markdown the LLM might hallucinate inside the JSON strings
-        for key in result:
-            if isinstance(result[key], str):
-                # Strips accidental backticks or language tags like ```sql
-                result[key] = result[key].strip().strip('`').replace('sql\n', '').replace('bash\n', '')
-                
-        return result
-        
+        start_idx = raw_text.find("{")
+        end_idx = raw_text.rfind("}")
+
+        if start_idx != -1 and end_idx != -1:
+            json_str = raw_text[start_idx:end_idx + 1]
+            result = json.loads(json_str)
+        else:
+            raise json.JSONDecodeError("No JSON object found", raw_text, 0)
+
     except json.JSONDecodeError:
-        # Fallback if JSON fails despite mime_type enforcement
-        raw_text = response.text if 'response' in locals() else "No response generated."
-        return {"error": "Failed to parse JSON from LLM.", "raw_response": raw_text}
-    except Exception as e:
-        return {"error": f"API Error: {str(e)}"}
+        result = {}
+        for key in persona["keys"]:
+            result[key] = extract_value_from_broken_json(raw_text, key)
+
+        if not any(result.values()):
+            return {
+                "error": "Failed to parse JSON from LLM.",
+                "raw_response": raw_text
+            }
+
+    for key in result:
+        if isinstance(result[key], str):
+            result[key] = result[key].strip()
+            result[key] = result[key].strip("`")
+            result[key] = re.sub(r"^sql\s*", "", result[key], flags=re.IGNORECASE)
+            result[key] = re.sub(r"^bash\s*", "", result[key], flags=re.IGNORECASE)
+
+    return result

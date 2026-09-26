@@ -10,41 +10,33 @@ from src.llm_agent import generate_analysis
 st.set_page_config(page_title="DataGraph OKF Copilot", layout="wide")
 
 st.title("DataGraph: OKF-Native Enterprise Copilot")
-st.caption("No Vector DBs. No Embeddings. Pure, structured knowledge traversal powered by Gemini 3.8 Flash.")
+st.caption("No Vector DBs. No Embeddings. Pure, structured knowledge traversal powered by OpenRouter (Gemma 4).")
 st.divider()
 
 def get_start_file(query: str) -> str:
     """Smart router for entry point selection."""
     query_lower = query.lower()
     
-    # Data Analytics
     if any(word in query_lower for word in ["cac", "acquisition", "marketing"]):
         return "knowledge_base/metrics/cac.md"
     elif any(word in query_lower for word in ["mrr", "revenue", "recurring"]):
         return "knowledge_base/metrics/mrr.md"
     elif any(word in query_lower for word in ["retention", "engagement", "churn"]):
         return "knowledge_base/metrics/user_retention.md"
-    
-    # DevOps
     elif any(word in query_lower for word in ["staging", "ec2", "server", "down", "incident"]):
         return "knowledge_base/runbooks/incident_response.md"
     elif any(word in query_lower for word in ["deployment", "deploy", "rollback"]):
         return "knowledge_base/infrastructure/deployment_pipeline.md"
     elif any(word in query_lower for word in ["database", "rds", "postgres"]):
         return "knowledge_base/infrastructure/aws_rds_prod.md"
-    
-    # Security
     elif any(word in query_lower for word in ["pii", "gdpr", "compliance", "audit"]):
         return "knowledge_base/security/pii_handling.md"
     elif any(word in query_lower for word in ["access", "permission", "role"]):
         return "knowledge_base/security/access_control.md"
-    
-    # Product
     elif any(word in query_lower for word in ["api", "endpoint", "rest"]):
         return "knowledge_base/product/api_contracts.md"
     elif any(word in query_lower for word in ["feature flag", "ab test", "experiment"]):
         return "knowledge_base/product/feature_flags.md"
-    
     else:
         return "knowledge_base/index.md"
 
@@ -75,7 +67,6 @@ with st.sidebar:
 # Main UI
 st.markdown("### Ask a Question")
 
-# Agent persona selector (optional override)
 col1, col2 = st.columns([1, 4])
 with col1:
     agent_override = st.selectbox(
@@ -104,35 +95,38 @@ if submit_button:
             start_file = get_start_file(user_query)
             agent_type = agent_override if agent_override != "auto" else get_agent_type(user_query)
             
-        # Traverse the knowledge graph
+        # Traverse the knowledge graph (max_depth=2 prevents context overflow)
         with st.spinner(f"Traversing OKF Graph from: `{start_file.replace('knowledge_base/', '').replace('knowledge_base\\', '')}`..."):
-            context, trace = traverse_graph(start_file, max_depth=3)
+            context, trace = traverse_graph(start_file, max_depth=2)
             st.session_state.trace = trace
             
         # Generate response
         with st.spinner(f"Generating response as {agent_type.replace('_', ' ').title()}..."):
             try:
-                # The LLM agent now returns a structured JSON dictionary directly
                 result = generate_analysis(user_query, context, agent_type)
                 
                 st.divider()
                 
-                # Handle global API errors
-                if "error" in result and result["error"] and "API Error" in str(result["error"]):
+                # 1. Handle Hard System/Parsing Errors
+                error_msg = str(result.get("error", ""))
+                if "API Error" in error_msg or "Failed to parse" in error_msg:
                     st.error(f"System Error: {result['error']}")
+                    if "raw_response" in result:
+                        with st.expander("View Raw LLM Output (Debugging)"):
+                            st.code(result["raw_response"])
+                
+                # 2. Handle Context Warnings (but still render UI if data was salvaged)
                 else:
-                    # Handle context warnings (e.g., missing info in OKF bundle)
                     if result.get("error"):
                         st.warning(f"Context Warning: {result['error']}")
                     
-                    # Render UI natively based on the agent type and JSON keys
+                    # 3. Render UI natively based on the agent type
                     if agent_type == "data_analyst":
                         if result.get("logic"):
                             st.subheader("Business Logic")
                             st.write(result["logic"])
                         if result.get("sql"):
                             st.subheader("SQL Query")
-                            # Clean any accidental markdown backticks just in case
                             clean_sql = result["sql"].replace("```sql", "").replace("```", "").strip()
                             st.code(clean_sql, language="sql")
                         if result.get("tip"):
